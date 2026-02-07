@@ -6631,6 +6631,8 @@ check_access(THD *thd, privilege_t want_access,
 #else
   Security_context *sctx= thd->security_ctx;
   privilege_t db_access(NO_ACL);
+  privilege_t denied_access(NO_ACL);
+  bool need_table_or_column_check;
 
   /*
     GRANT command:
@@ -6702,6 +6704,12 @@ check_access(THD *thd, privilege_t want_access,
     }
   }
 
+  if (!dont_check_global_grants)
+  {
+    denied_access= sctx->master_access.is_denied(want_access);
+    if (denied_access)
+      goto error;
+  }
   if ((sctx->master_access & want_access) == want_access)
   {
     /*
@@ -6776,7 +6784,7 @@ check_access(THD *thd, privilege_t want_access,
     We need to investigate column- and table access if all requested privileges
     belongs to the bit set of .
   */
-  bool need_table_or_column_check=
+  need_table_or_column_check=
     (want_access & (TABLE_ACLS | PROC_ACLS | db_access)) == want_access;
 
   /*
@@ -6796,6 +6804,7 @@ check_access(THD *thd, privilege_t want_access,
     DBUG_RETURN(FALSE);
   }
 
+error:
   /*
     Access is denied;
     [out] *save_privileges is (User-priv | (Db-priv & Host-priv) | Internal-priv)
