@@ -1733,17 +1733,15 @@ static int ddl_log_execute_action(THD *thd, MEM_ROOT *mem_root,
                           &ddl_log_entry->from_name);
         recovery_state.drop_table.append(&end_comment);
       }
-      if (mysql_bin_log.is_open())
-      {
-        mysql_mutex_unlock(&LOCK_gdl);
-        thd->db= ddl_log_entry->db;
-        (void) thd->binlog_query(THD::STMT_QUERY_TYPE,
-                                 recovery_state.drop_table.ptr(),
-                                 recovery_state.drop_table.length(), TRUE, FALSE,
-                                 FALSE, 0);
-        thd->db= thd_db;
-        mysql_mutex_lock(&LOCK_gdl);
-      }
+
+      mysql_mutex_unlock(&LOCK_gdl);
+      thd->db= ddl_log_entry->db;
+      (void) thd->binlog_query(THD::STMT_QUERY_TYPE,
+                               recovery_state.drop_table.ptr(),
+                               recovery_state.drop_table.length(), TRUE, FALSE,
+                               FALSE, 0);
+      thd->db= thd_db;
+      mysql_mutex_lock(&LOCK_gdl);
     }
     (void) update_phase(entry_pos, DDL_LOG_FINAL_PHASE);
     break;

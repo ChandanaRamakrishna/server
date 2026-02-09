@@ -2263,6 +2263,7 @@ public:
   ulong     tmp_tables_disk_used;
   ulong     query_plan_fsort_passes;
   ulong query_plan_flags; 
+  enum enum_binlog_state binlog_state;
   uint in_sub_stmt;    /* 0,  SUB_STMT_TRIGGER or SUB_STMT_FUNCTION */
   bool enable_slow_log;
   bool last_insert_id_used;
@@ -3477,7 +3478,8 @@ public:
   int is_current_stmt_binlog_format_row() const
   {
     DBUG_ASSERT(current_stmt_binlog_format == BINLOG_FORMAT_STMT ||
-                current_stmt_binlog_format == BINLOG_FORMAT_ROW);
+                current_stmt_binlog_format == BINLOG_FORMAT_ROW ||
+                current_stmt_binlog_format == BINLOG_FORMAT_UNSPEC);
     return current_stmt_binlog_format == BINLOG_FORMAT_ROW;
   }
 
@@ -3586,6 +3588,8 @@ private:
   enum_binlog_format current_stmt_binlog_format;
 
 public:
+  /* Tells us if the binary log is off, temporary off or active */
+  enum_binlog_state binlog_state;
 
   /* 1 if binlog table maps has been written */
   bool binlog_table_maps;
@@ -5141,6 +5145,8 @@ public:
                                 enum_binlog_format current_format)
   {
     DBUG_ENTER("set_binlog_format");
+    DBUG_ASSERT((binlog_state & BINLOG_STATE_ACTIVE) ||
+                current_format == BINLOG_FORMAT_UNSPEC);
     variables.binlog_format= format;
     current_stmt_binlog_format= current_format;
     DBUG_VOID_RETURN;
@@ -5148,8 +5154,12 @@ public:
   inline void set_binlog_format_stmt()
   {
     DBUG_ENTER("set_binlog_format_stmt");
-    variables.binlog_format=    BINLOG_FORMAT_STMT;
-    current_stmt_binlog_format= BINLOG_FORMAT_STMT;
+    DBUG_ASSERT(binlog_state & BINLOG_STATE_ACTIVE);
+    if (binlog_state & BINLOG_STATE_ACTIVE)
+    {
+      variables.binlog_format=    BINLOG_FORMAT_STMT;
+      current_stmt_binlog_format= BINLOG_FORMAT_STMT;
+    }
     DBUG_VOID_RETURN;
   }
   /*
@@ -5184,27 +5194,37 @@ public:
 
   inline void set_current_stmt_binlog_format(enum_binlog_format format)
   {
-    current_stmt_binlog_format= format;
+    if (binlog_state & BINLOG_STATE_ACTIVE)
+      current_stmt_binlog_format= format;
   }
 
   inline void set_current_stmt_binlog_format_row()
   {
     DBUG_ENTER("set_current_stmt_binlog_format_row");
-    current_stmt_binlog_format= BINLOG_FORMAT_ROW;
+    if (binlog_state & BINLOG_STATE_ACTIVE)
+      current_stmt_binlog_format= BINLOG_FORMAT_ROW;
     DBUG_VOID_RETURN;
   }
+
+  inline void set_current_stmt_binlog_format_unspec()
+  {
+    current_stmt_binlog_format= BINLOG_FORMAT_UNSPEC;
+  }
+
   /* Set binlog format temporarily to statement. Returns old format */
   inline enum_binlog_format set_current_stmt_binlog_format_stmt()
   {
     enum_binlog_format orig_format= current_stmt_binlog_format;
     DBUG_ENTER("set_current_stmt_binlog_format_stmt");
-    current_stmt_binlog_format= BINLOG_FORMAT_STMT;
+    if (binlog_state & BINLOG_STATE_ACTIVE)
+      current_stmt_binlog_format= BINLOG_FORMAT_STMT;
     DBUG_RETURN(orig_format);
   }
   inline void restore_stmt_binlog_format(enum_binlog_format format)
   {
     DBUG_ENTER("restore_stmt_binlog_format");
-    DBUG_ASSERT(is_current_stmt_binlog_format_stmt());
+    DBUG_ASSERT((binlog_state & BINLOG_STATE_ACTIVE) ||
+                format == BINLOG_FORMAT_UNSPEC);
     current_stmt_binlog_format= format;
     DBUG_VOID_RETURN;
   }
@@ -5216,10 +5236,15 @@ public:
                 YESNO(in_sub_stmt), show_system_thread(system_thread)));
     if (in_sub_stmt == 0)
     {
-      if (wsrep_binlog_format(variables.binlog_format) == BINLOG_FORMAT_ROW)
+      if (binlog_state == 0)
+      {
+        DBUG_ASSERT(current_stmt_binlog_format == BINLOG_FORMAT_UNSPEC);
+      }
+      else if (wsrep_binlog_format(variables.binlog_format) ==
+               BINLOG_FORMAT_ROW)
         set_current_stmt_binlog_format_row();
       else
-        set_current_stmt_binlog_format_stmt();
+        set_current_stmt_binlog_format_stmt();  // STMT or MIXED
     }
     DBUG_VOID_RETURN;
   }

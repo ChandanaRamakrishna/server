@@ -3746,9 +3746,10 @@ mysql_execute_command(THD *thd, bool is_called_from_prepared_stmt)
     privilege, system or statistic tables directly without the updates
     getting logged.
   */
-  if (!(sql_command_flags[lex->sql_command] &
-        (CF_CAN_GENERATE_ROW_EVENTS | CF_FORCE_ORIGINAL_BINLOG_FORMAT |
-         CF_STATUS_COMMAND)))
+  if ((!(sql_command_flags[lex->sql_command] &
+         (CF_CAN_GENERATE_ROW_EVENTS | CF_FORCE_ORIGINAL_BINLOG_FORMAT |
+          CF_STATUS_COMMAND))) &&
+      (thd->binlog_state & BINLOG_STATE_ACTIVE))
     thd->set_binlog_format_stmt();
 
   /*
@@ -5977,7 +5978,8 @@ finish:
 #endif
   if (!(sql_command_flags[lex->sql_command] &
         (CF_CAN_GENERATE_ROW_EVENTS | CF_FORCE_ORIGINAL_BINLOG_FORMAT |
-         CF_STATUS_COMMAND)))
+         CF_STATUS_COMMAND)) &&
+      (thd->binlog_state & BINLOG_STATE_ACTIVE))
     thd->set_binlog_format(orig_binlog_format,
                            orig_current_stmt_binlog_format);
 

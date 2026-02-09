@@ -1763,7 +1763,7 @@ binlog_trans_log_savepos(THD *thd, my_off_t *pos)
   DBUG_ENTER("binlog_trans_log_savepos");
   DBUG_ASSERT(pos != NULL);
   binlog_cache_mngr *const cache_mngr= thd->binlog_setup_trx_data();
-  DBUG_ASSERT((WSREP(thd) && wsrep_emulate_bin_log) || mysql_bin_log.is_open());
+  DBUG_ASSERT(thd->binlog_state & BINLOG_STATE_ACTIVE);
   *pos= cache_mngr->trx_cache.get_byte_position();
   DBUG_PRINT("return", ("*pos: %lu", (ulong) *pos));
   DBUG_VOID_RETURN;

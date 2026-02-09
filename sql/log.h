@@ -1367,8 +1367,39 @@ enum enum_binlog_format {
   BINLOG_FORMAT_MIXED= 0, ///< statement if safe, otherwise row - autodetected
   BINLOG_FORMAT_STMT=  1, ///< statement-based
   BINLOG_FORMAT_ROW=   2, ///< row-based
-  BINLOG_FORMAT_UNSPEC=3  ///< thd_binlog_format() returns it when binlog is closed
+  /*
+    thd_binlog_format() returns it when binlog is closed. Also used by
+    current_stmt_binlog_format when no binary log is open and Galera
+    is not used
+  */
+  BINLOG_FORMAT_UNSPEC=3
 };
+
+enum enum_binlog_state
+{
+  BINLOG_STATE_NONE=       0,
+  BINLOG_STATE_OPEN=       (1<<1),   // Binlog open
+  BINLOG_STATE_WSREP=      (1<<2),   // wsrep_emulate_bin_log set
+  BINLOG_STATE_ACTIVE=     (1<<3),   // True if on of above
+  BINLOG_STATE_OFF=        (1<<4),   // OPTION_BIN_LOG is not set
+  BINLOG_STATE_FILTER=     (1<<5)    // Database filtered used
+};
+
+static inline enum_binlog_state operator&(const enum_binlog_state a, const enum_binlog_state b)
+{
+  return (enum_binlog_state) (((int) a) & ((int) b));
+}
+
+static inline enum_binlog_state operator|(const enum_binlog_state a, const enum_binlog_state b)
+{
+  return (enum_binlog_state) (((int) a) | ((int) b));
+}
+
+#define BINLOG_STATE_ALL \
+  (BINLOG_STATE_ACTIVE | BINLOG_STATE_OFF | BINLOG_STATE_FILTER)
+
+#define BINLOG_USABLE(BS) ((bool) (((BS) & BINLOG_STATE_ALL) == BINLOG_STATE_ACTIVE))
+#define BINLOG_USABLE_NO_WSREP (((bool) ((BS) & BINLOG_STATE_OPEN) == BINLOG_STATE_OPEN))
 
 int query_error_code(THD *thd, bool not_killed);
 uint purge_log_get_error_code(int res);

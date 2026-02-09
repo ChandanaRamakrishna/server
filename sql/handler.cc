@@ -4486,9 +4486,7 @@ int handler::update_auto_increment()
                                           variables->auto_increment_increment);
     auto_inc_intervals_count++;
     /* Row-based replication does not need to store intervals in binlog */
-    if (((WSREP_NNULL(thd) && wsrep_emulate_bin_log) ||
-         mysql_bin_log.is_open()) &&
-        thd->is_current_stmt_binlog_format_stmt())
+    if (thd->is_current_stmt_binlog_format_stmt())
       thd->auto_inc_intervals_in_cur_stmt_for_binlog.
         append(auto_inc_interval_for_cur_row.minimum(),
                auto_inc_interval_for_cur_row.values(),
@@ -7669,8 +7667,7 @@ static int binlog_log_row_to_binlog(TABLE* table,
     DBUG_RETURN(HA_ERR_RBR_LOGGING_FAILED);
 
   DBUG_ASSERT(thd->is_current_stmt_binlog_format_row());
-  DBUG_ASSERT((WSREP_NNULL(thd) && wsrep_emulate_bin_log)
-              || mysql_bin_log.is_open());
+  DBUG_ASSERT(thd->binlog_state & BINLOG_STATE_ACTIVE);
 
   auto *cache_mngr= thd->binlog_setup_trx_data();
   if (cache_mngr == NULL)

@@ -697,7 +697,6 @@ THD::THD(my_thread_id id, bool is_wsrep_applier)
    m_current_stage_key(0), m_psi(0), start_time(0), start_time_sec_part(0),
    in_sub_stmt(0), log_all_errors(0),
    binlog_unsafe_warning_flags(0),
-   current_stmt_binlog_format(BINLOG_FORMAT_MIXED),
    bulk_param(0),
    table_map_for_update(0),
    m_sent_row_count(0),
@@ -868,6 +867,12 @@ THD::THD(my_thread_id id, bool is_wsrep_applier)
   db_charset= global_system_variables.collation_database;
   bzero((void*) ha_data, sizeof(ha_data));
   mysys_var=0;
+  binlog_state= ((mysql_bin_log.is_open() ?
+                  BINLOG_STATE_OPEN | BINLOG_STATE_ACTIVE : BINLOG_STATE_NONE) |
+                 (wsrep_emulate_bin_log ?
+                  BINLOG_STATE_WSREP | BINLOG_STATE_ACTIVE : BINLOG_STATE_NONE));
+  current_stmt_binlog_format= (binlog_state ?
+                               BINLOG_FORMAT_MIXED : BINLOG_FORMAT_UNSPEC);
   binlog_evt_union.do_union= FALSE;
   binlog_table_maps= FALSE;
   binlog_xid= 0;
@@ -6203,6 +6208,7 @@ void THD::reset_sub_statement_state(Sub_statement_state *backup,
   backup->first_successful_insert_id_in_cur_stmt= 
     first_successful_insert_id_in_cur_stmt;
   backup->do_union= binlog_evt_union.do_union;
+  backup->binlog_state= binlog_state;
   store_slow_query_state(backup);
 
   if ((!lex->requires_prelocking() || is_update_query(lex->sql_command)) &&
@@ -6265,6 +6271,7 @@ void THD::restore_sub_statement_state(Sub_statement_state *backup)
     backup->first_successful_insert_id_in_cur_stmt;
   limit_found_rows= backup->limit_found_rows;
   client_capabilities= backup->client_capabilities;
+  binlog_state= backup->binlog_state;
 
   /* Restore statistic needed for slow log */
   add_slow_query_state(backup);
@@ -6784,7 +6791,7 @@ void start_new_trans::restore_old_transaction()
      at least one table uses a storage engine limited to
      statement-logging.
 
-  5. Error: Cannot execute statement: binlogging impossible since
+  5. Note: Cannot execute statement: binlogging impossible since
      BINLOG_FORMAT = STATEMENT and at least one table uses a storage
      engine limited to row-logging.
 
@@ -6820,27 +6827,35 @@ void start_new_trans::restore_old_transaction()
 
 int THD::decide_logging_format(TABLE_LIST *tables)
 {
+  ulong binlog_format;
+
   DBUG_ENTER("THD::decide_logging_format");
   DBUG_PRINT("info", ("Query: %.*s", (uint) query_length(), query()));
   DBUG_PRINT("info", ("binlog_format: %lu", (ulong) variables.binlog_format));
   DBUG_PRINT("info", ("current_stmt_binlog_format: %lu",
                       (ulong) current_stmt_binlog_format));
+  DBUG_PRINT("info", ("binlog_state: %d", binlog_state));
   DBUG_PRINT("info", ("lex->get_stmt_unsafe_flags(): 0x%x",
                       lex->get_stmt_unsafe_flags()));
 
-  reset_binlog_local_stmt_filter();
+  if (binlog_state == BINLOG_STATE_NONE)      // No binlogging, no Galera
+  {
+    DBUG_ASSERT(current_stmt_binlog_format == BINLOG_FORMAT_UNSPEC);
+    DBUG_RETURN(0);
+  }
+  /* Strip the binlogging restrictions from the state */
+  binlog_state= binlog_state & (BINLOG_STATE_OPEN | BINLOG_STATE_WSREP |
+                                BINLOG_STATE_ACTIVE);
+  /* We should have either binlog or wsrep_emulate_binlog active */
+  DBUG_ASSERT((binlog_state & BINLOG_STATE_ACTIVE) &&
+              binlog_state & (BINLOG_STATE_OPEN | BINLOG_STATE_WSREP));
 
-  // Used binlog format
-  ulong binlog_format= wsrep_binlog_format(variables.binlog_format);
-  /*
-    We should not decide logging format if the binlog is closed or
-    binlogging is off, or if the statement is filtered out from the
-    binlog by filtering rules.
-  */
+  binlog_format= variables.binlog_format;
 
 #ifdef WITH_WSREP
   if (WSREP_CLIENT_NNULL(this))
   {
+    binlog_format= wsrep_binlog_format(binlog_format);
     if (wsrep_thd_is_local(this) &&
         wsrep_is_active(this) &&
         variables.wsrep_trx_fragment_size > 0)
@@ -6874,7 +6889,6 @@ int THD::decide_logging_format(TABLE_LIST *tables)
                               wsrep_forced_binlog_format == BINLOG_FORMAT_STMT ?
                               "STMT" : "MIXED");
         }
-        DBUG_ASSERT(current_stmt_binlog_format != BINLOG_FORMAT_UNSPEC);
         set_current_stmt_binlog_format_row();
       }
 
@@ -6896,11 +6910,21 @@ int THD::decide_logging_format(TABLE_LIST *tables)
         set_current_stmt_binlog_format_row();
       }
     }
+    if (wsrep_emulate_bin_log)
+      DBUG_ASSERT((binlog_state & (BINLOG_STATE_WSREP | BINLOG_STATE_ACTIVE)) ==
+                  (BINLOG_STATE_WSREP | BINLOG_STATE_ACTIVE));
   }
 #endif /* WITH_WSREP */
 
-  if (WSREP_EMULATE_BINLOG_NNULL(this) ||
-      binlog_table_should_be_logged(&db))
+  /* To speed up things, we only set the first of the 'do not binlog' bits */
+  if (!(variables.option_bits & OPTION_BIN_LOG))
+    binlog_state= binlog_state | BINLOG_STATE_OFF;
+  else if (wsrep_binlog_format(variables.binlog_format) == BINLOG_FORMAT_STMT &&
+           !binlog_filter->db_ok(db.str))
+    binlog_state= binlog_state | BINLOG_STATE_FILTER;
+
+  if (BINLOG_USABLE(binlog_state) ||
+      (bool) (binlog_state & BINLOG_STATE_WSREP))
   {
     if (is_bulk_op())
     {
@@ -6912,6 +6936,8 @@ int THD::decide_logging_format(TABLE_LIST *tables)
         DBUG_RETURN(-1);
       }
     }
+    reset_binlog_local_stmt_filter();
+
     /*
       Compute one bit field with the union of all the engine
       capabilities, and one with the intersection of all the engine
@@ -7251,7 +7277,7 @@ int THD::decide_logging_format(TABLE_LIST *tables)
                  sqlcom_can_generate_row_events(this))
         {
           /*
-            5. Error: Cannot modify table that uses a storage engine
+            5. Note: Cannot modify table that uses a storage engine
                limited to row-logging when binlog_format = STATEMENT, except
                if all tables that are updated are temporary tables
           */
@@ -7376,22 +7402,21 @@ int THD::decide_logging_format(TABLE_LIST *tables)
     }
     if (is_write && is_current_stmt_binlog_format_row())
       binlog_prepare_for_row_logging();
-    DBUG_ASSERT(current_stmt_binlog_format == BINLOG_FORMAT_ROW ||
-                current_stmt_binlog_format == BINLOG_FORMAT_STMT);
   }
   else
   {
     DBUG_PRINT("info", ("decision: no logging since "
-                        "mysql_bin_log.is_open() = %d "
-                        "and (options & OPTION_BIN_LOG) = 0x%llx "
-                        "and binlog_format = %u "
-                        "and binlog_filter->db_ok(db) = %d",
+                        "mysql_bin_log.is_open(): %d   "
+                        "(options & OPTION_BIN_LOG): 0x%llx  "
+                        "binlog_format: %u  "
+                        "binlog_filter->db_ok(db): %d  "
+                        "binlog_status: %d",
                         mysql_bin_log.is_open(),
                         (variables.option_bits & OPTION_BIN_LOG),
                         (uint) binlog_format,
-                        binlog_filter->db_ok(db.str)));
-    if (WSREP_NNULL(this) && is_current_stmt_binlog_format_row())
-      binlog_prepare_for_row_logging();
+                        binlog_filter->db_ok(db.str),
+                        binlog_state));
+    DBUG_ASSERT(binlog_state != 0);
   }
   DBUG_RETURN(0);
 }
