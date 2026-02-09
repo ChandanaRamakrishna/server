@@ -457,7 +457,7 @@ bool Sql_cmd_delete::delete_from_single_table(THD *thd)
   deleted= 0;
 
   if (!returning && !using_limit && const_cond_result &&
-      !thd->is_current_stmt_binlog_format_row() && !has_triggers &&
+      thd->is_current_stmt_binlog_format_stmt() && !has_triggers &&
       !table->versioned(VERS_TIMESTAMP) && !table_list->has_period())
   {
     /* Update the table->file->stats.records number */
