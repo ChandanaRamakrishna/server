@@ -2049,10 +2049,6 @@ class User_table_json: public User_table
       {}
     };
 
-    String str, *res= m_table->field[2]->val_str(&str);
-    if (!res || !res->length())
-      (res= &str)->set(STRING_WITH_LEN("{}"), m_table->field[2]->charset());
-
     StringBuffer<JSON_SIZE> json(m_table->field[2]->charset());
     json.append('[');
 
