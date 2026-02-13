@@ -4,6 +4,7 @@
 
 --source include/have_innodb.inc
 --source include/no_valgrind_without_big.inc
+--source include/skip_innodb_log_archive.inc
 
 --disable_query_log
 call mtr.add_suppression("InnoDB: Could not create undo tablespace.*undo002");

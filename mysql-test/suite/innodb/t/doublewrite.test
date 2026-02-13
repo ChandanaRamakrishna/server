@@ -5,6 +5,8 @@
 
 --source include/innodb_page_size.inc
 --source include/not_embedded.inc
+--source include/skip_innodb_log_archive.inc
+--source include/no_checkpoint_prepare.inc
 
 --disable_query_log
 call mtr.add_suppression("InnoDB: Data file .* uses page size .* but the innodb_page_size start-up parameter is");

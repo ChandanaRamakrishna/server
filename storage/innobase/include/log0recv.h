@@ -244,8 +244,18 @@ public:
   lsn_t scanned_lsn;
   /** log sequence number at the end of the FILE_CHECKPOINT record, or 0 */
   lsn_t file_checkpoint;
+  /** recovery start checkpoint */
+  lsn_t recovery_start;
+  /** recovery point objective (a limit for scanned_lsn) */
+  lsn_t rpo;
+
   /** the time when progress was last reported */
   time_t progress_time;
+
+  struct archive_log { const lsn_t end; bool read_only; };
+  using archive_map = std::map<const lsn_t, archive_log>;
+  /** archive log files */
+  archive_map log_archive;
 
   using map = std::map<const page_id_t, page_recv_t,
                        std::less<const page_id_t>,
@@ -400,6 +410,15 @@ public:
   /** Find the latest checkpoint.
   @return error code or DB_SUCCESS */
   dberr_t find_checkpoint();
+
+private:
+  /** Find a checkpoint in an innodb_log_archive=ON file.
+  @param first_lsn  the first LSN of the file
+  @param silent     whether to silence error reporting
+  @return error code
+  @retval DB_SUCCESS if a suitable checkpoint was found */
+  dberr_t find_checkpoint_archived(lsn_t first_lsn, bool silent);
+public:
 
   /** Register a redo log snippet for a page.
   @param it       page iterator
