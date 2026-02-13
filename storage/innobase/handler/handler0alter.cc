@@ -2227,6 +2227,8 @@ ha_innobase::check_if_supported_inplace_alter(
 {
 	DBUG_ENTER("check_if_supported_inplace_alter");
 
+	ha_alter_info->engine_flags.file_per_table= !!srv_file_per_table;
+
 	if ((ha_alter_info->handler_flags
 	     & INNOBASE_ALTER_VERSIONED_REBUILD)
 	    && altered_table->versioned(VERS_TIMESTAMP)) {
@@ -2341,7 +2343,8 @@ innodb_instant_alter_column_allowed_reason:
 
 	switch (ha_alter_info->handler_flags & ~INNOBASE_INPLACE_IGNORE) {
 	case ALTER_OPTIONS:
-		if ((srv_file_per_table && !m_prebuilt->table->space_id)
+		if ((ha_alter_info->engine_flags.file_per_table &&
+		     !m_prebuilt->table->space_id)
 		    || alter_options_need_rebuild(ha_alter_info, table)) {
 			reason_rebuild = my_get_err_msg(
 				ER_ALTER_OPERATION_TABLE_OPTIONS_NEED_REBUILD);
@@ -2532,7 +2535,7 @@ innodb_instant_alter_column_allowed_reason:
 				DBUG_ASSERT(key_part->field == altered_table
 					    -> found_next_number_field);
 
-				if (ha_alter_info->online) {
+				if (ha_alter_info->engine_flags.online) {
 					ha_alter_info->unsupported_reason = my_get_err_msg(
 						ER_ALTER_OPERATION_NOT_SUPPORTED_REASON_AUTOINC);
 				}
@@ -2553,7 +2556,7 @@ innodb_instant_alter_column_allowed_reason:
 					DBUG_RETURN(HA_ALTER_INPLACE_NOT_SUPPORTED);
 				}
 
-				if (ha_alter_info->online
+				if (ha_alter_info->engine_flags.online
 				    && !ha_alter_info->unsupported_reason) {
 					ha_alter_info->unsupported_reason =
 						MSG_UNSUPPORTED_ALTER_ONLINE_ON_VIRTUAL_COLUMN;
@@ -2749,7 +2752,7 @@ cannot_create_many_fulltext_index:
 			DBUG_RETURN(HA_ALTER_INPLACE_NOT_SUPPORTED);
 		}
 
-		if (!online || !ha_alter_info->online
+		if (!online || !ha_alter_info->engine_flags.online
 		    || ha_alter_info->unsupported_reason != reason_rebuild) {
 			/* Either LOCK=NONE was not requested, or we already
 			gave specific reason to refuse it. */
@@ -2805,7 +2808,7 @@ cannot_create_many_fulltext_index:
 				}
 
 				add_fulltext = true;
-				if (ha_alter_info->online
+				if (ha_alter_info->engine_flags.online
 				    && !ha_alter_info->unsupported_reason) {
 					ha_alter_info->unsupported_reason = my_get_err_msg(
 						ER_ALTER_OPERATION_NOT_SUPPORTED_REASON_FTS);
@@ -2830,7 +2833,7 @@ cannot_create_many_fulltext_index:
 
 			if (online && (key->flags & HA_SPATIAL)) {
 
-				if (ha_alter_info->online) {
+				if (ha_alter_info->engine_flags.online) {
 					ha_alter_info->unsupported_reason = my_get_err_msg(
 						ER_ALTER_OPERATION_NOT_SUPPORTED_REASON_GIS);
 				}
@@ -2841,7 +2844,7 @@ cannot_create_many_fulltext_index:
 	}
 
 	if (m_prebuilt->table->is_stats_table()) {
-		if (ha_alter_info->online) {
+		if (ha_alter_info->engine_flags.online) {
 			ha_alter_info->unsupported_reason =
 				table_share->table_name.str;
 		}
@@ -2850,7 +2853,7 @@ cannot_create_many_fulltext_index:
 
 	// FIXME: implement Online DDL for system-versioned operations
 	if (ha_alter_info->handler_flags & INNOBASE_ALTER_VERSIONED_REBUILD) {
-		if (ha_alter_info->online) {
+		if (ha_alter_info->engine_flags.online) {
 			ha_alter_info->unsupported_reason = not_implemented;
 		}
 
@@ -6600,7 +6603,7 @@ prepare_inplace_alter_table_dict(
 
 	create_table_info_t info(ctx->prebuilt->trx->mysql_thd, altered_table,
 				 ha_alter_info->create_info, NULL, NULL,
-				 srv_file_per_table);
+				 ha_alter_info->engine_flags.file_per_table);
 
 	/* The primary index would be rebuilt if a FTS Doc ID
 	column is to be added, and the primary index definition
@@ -8011,9 +8014,9 @@ ha_innobase::prepare_inplace_alter_table(
 	This optimization is disabled for partition table. */
 	ha_alter_info->mdl_exclusive_after_prepare =
 		innobase_table_is_empty(m_prebuilt->table, false);
-	if (ha_alter_info->online
+	if (ha_alter_info->engine_flags.online
 	    && ha_alter_info->mdl_exclusive_after_prepare) {
-		ha_alter_info->online = false;
+		ha_alter_info->engine_flags.online = false;
 	}
 #ifdef WITH_PARTITION_STORAGE_ENGINE
 	}
@@ -8030,7 +8033,7 @@ ha_innobase::prepare_inplace_alter_table(
 				     ha_alter_info->create_info,
 				     NULL,
 				     NULL,
-				     srv_file_per_table);
+				     ha_alter_info->engine_flags.file_per_table);
 
 	info.set_tablespace_type(indexed_table->space != fil_system.sys_space);
 
@@ -8611,7 +8614,7 @@ field_changed:
 					drop_index, n_drop_index,
 					drop_fk, n_drop_fk,
 					add_fk, n_add_fk,
-					ha_alter_info->online,
+					ha_alter_info->engine_flags.online,
 					heap, indexed_table,
 					col_names, ULINT_UNDEFINED, 0, 0,
 					(ha_alter_info->ignore
@@ -8766,7 +8769,7 @@ found_col:
 		m_prebuilt,
 		drop_index, n_drop_index,
 		drop_fk, n_drop_fk, add_fk, n_add_fk,
-		ha_alter_info->online,
+		ha_alter_info->engine_flags.online,
 		heap, m_prebuilt->table, col_names,
 		add_autoinc_col_no,
 		ha_alter_info->create_info->auto_increment_value,

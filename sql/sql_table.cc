@@ -7663,7 +7663,7 @@ static bool mysql_inplace_alter_table(THD *thd,
     switch (alter_info->requested_lock) {
     case Alter_info::ALTER_TABLE_LOCK_DEFAULT:
     case Alter_info::ALTER_TABLE_LOCK_NONE:
-      ha_alter_info->online= true;
+      ha_alter_info->engine_flags.online= true;
       break;
     case Alter_info::ALTER_TABLE_LOCK_SHARED:
     case Alter_info::ALTER_TABLE_LOCK_EXCLUSIVE:
@@ -10798,7 +10798,7 @@ do_continue:;
     thd->count_cuted_fields= CHECK_FIELD_IGNORE;
 
     if (alter_info->requested_lock == Alter_info::ALTER_TABLE_LOCK_NONE)
-      ha_alter_info.online= true;
+      ha_alter_info.engine_flags.online= true;
     // Ask storage engine whether to use copy or in-place
     {
       Check_level_instant_set check_level_save(thd, CHECK_FIELD_WARN);

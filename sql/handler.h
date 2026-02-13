@@ -2636,8 +2636,16 @@ public:
   /** true for ALTER IGNORE TABLE ... */
   const bool ignore;
 
-  /** true for online operation (LOCK=NONE) */
-  bool online= false;
+  /** Online operation and storage engine specific flags */
+  struct
+  {
+    /** TRUE for online operation (LOCK=NONE) */
+    unsigned online : 1;
+    /** TRUE when innodb_file_per_table is set */
+    unsigned file_per_table : 1;
+    /** Reserved for future storage engine flags */
+    unsigned reserved : 6;
+  } engine_flags= {0, 0, 0};
 
   /**
     When ha_commit_inplace_alter_table() is called the the engine can
