@@ -3148,6 +3148,8 @@ static LEX_STRING make_and_check_db_name(MEM_ROOT *mem_root,
 static ACL_USER_BASE *find_acl_user_base(const LEX_CSTRING &user,
                                          const LEX_CSTRING &host);
 
+static bool user_table_has_denies;
+
 
 /*
   Initialize structures responsible for user/db-level privilege checking
@@ -3233,7 +3235,7 @@ static bool acl_load(THD *thd, const Grant_tables& tables)
     DBUG_RETURN(true);
 
   allow_all_hosts=0;
-
+  user_table_has_denies= false;
   while (!(read_record_info.read_record()))
   {
     ACL_USER user;
@@ -3315,6 +3317,13 @@ static bool acl_load(THD *thd, const Grant_tables& tables)
 
       user.default_rolename.str= user_table.get_default_role(&acl_memroot);
       user.default_rolename.length= safe_strlen(user.default_rolename.str);
+      /* set user_table_has_denies for later loading in load_grant() */
+      if (!user_table_has_denies)
+        user_table.enumerate_deny_entries(
+            [](const deny_callback_data_t *e, void *ctx) -> int {
+              user_table_has_denies= true;
+              return 1;
+            },nullptr);
     }
     push_new_user(user);
   }
@@ -5659,20 +5668,6 @@ apply_deny_closure_to_caches(const LEX_USER &combo,
     Clear the privilege check cache (acl_cache)
   */
   acl_cache->clear(1);
-
-  /*
-    If the target is a role, propagate the deny privilege changes
-    to the role hierarchy. This is necessary because roles can be granted to
-    other roles
-  */
-  if (combo.is_role())
-  {
-    ACL_ROLE *role= find_acl_role(combo.user, true);
-    if (role)
-    {
-      propagate_role_grants_all(role);
-    }
-  }
   
   DBUG_RETURN(0);
 }
@@ -9269,6 +9264,7 @@ static bool grant_load(THD *thd,
       while (!p_table->file->ha_index_next(p_table->record[0]));
     }
   }
+  if (user_table_has_denies)
   {
     READ_RECORD read_record_info;
     if (user_table.init_read_record(&read_record_info))
@@ -9292,6 +9288,7 @@ static bool grant_load(THD *thd,
       std::vector<deny_entry_t> denies;
       collect_denies(user_table, denies);
       std::vector closure= build_deny_closure(denies);
+
       mysql_mutex_lock(&acl_cache->lock);
       apply_deny_closure_to_caches(combo, closure);
       mysql_mutex_unlock(&acl_cache->lock);
