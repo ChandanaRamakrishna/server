@@ -1707,6 +1707,8 @@ static bool recv_sys_invalid_rpo(lsn_t lsn) noexcept
 inline void log_t::stash_archive_file() noexcept
 {
   ut_ad(log.is_opened());
+  ut_ad(archive);
+  ut_ad(is_mmap() == !checkpoint_buf);
   if (resize_log.is_opened())
   {
     ut_ad(!is_mmap() == !resize_buf);
@@ -1817,8 +1819,8 @@ dberr_t recv_sys_t::find_checkpoint()
         }
         log_archive.emplace
           (lsn, archive_log{lsn - log_t::START_OFFSET + filesize.QuadPart,
-                            bool(entry.dwFileAttributes &
-                                 FILE_ATTRIBUTE_READONLY)});
+                            log_t::log_access(entry.dwFileAttributes &
+                                              FILE_ATTRIBUTE_READONLY)});
       }
       while (FindNextFile(d, &entry));
       FindClose(d);
@@ -1844,7 +1846,7 @@ dberr_t recv_sys_t::find_checkpoint()
         }
         log_archive.emplace
           (lsn, archive_log{lsn - log_t::START_OFFSET + st.st_size,
-                            !(st.st_mode & 0200)});
+                            log_t::log_access(!(st.st_mode & 0200))});
       }
       closedir(d);
 #endif
@@ -1866,7 +1868,7 @@ dberr_t recv_sys_t::find_checkpoint()
         if (i == end)
           break;
         if (last == i->first)
-          prev->second.read_only= true;
+          prev->second.access= log_t::READ_ONLY;
         else
         {
           log_archive.erase(log_archive.begin(), start= i);
@@ -1882,6 +1884,7 @@ dberr_t recv_sys_t::find_checkpoint()
       }
 
       i= log_archive.end();
+      byte last_checkpoint_buf[log_t::WRITE_SIZE_MAX];
       for (uint16_t last_checkpoint_no= log_sys.next_checkpoint_no= UINT16_MAX;
            i != start; )
       {
@@ -1902,9 +1905,12 @@ dberr_t recv_sys_t::find_checkpoint()
         default:
           path.push_back('/');
         }
-        read_only= i->second.read_only;
+        read_only= bool(i->second.access);
+        ut_ad(log_t::log_access(read_only) == i->second.access);
         const bool open_read_only{read_only || rpo || srv_read_only_mode};
-        i->second.read_only= open_read_only;
+        i->second.access= log_t::log_access(open_read_only);
+        static_assert(log_t::READ_WRITE == log_t::log_access(false), "");
+        static_assert(log_t::READ_ONLY == log_t::log_access(true), "");
         file=
           os_file_create_func(log_sys.append_archive_name(path, i->first).
                               c_str(), OS_FILE_OPEN, OS_LOG_FILE,
@@ -1912,7 +1918,7 @@ dberr_t recv_sys_t::find_checkpoint()
         if (file == OS_FILE_CLOSED)
           return DB_ERROR;
         if (!log_sys.attach(file, i->second.end - i->first +
-                            log_t::START_OFFSET, open_read_only))
+                            log_t::START_OFFSET, log_t::READ_ONLY))
         {
           os_file_close(file);
           return DB_ERROR;
@@ -1930,6 +1936,8 @@ dberr_t recv_sys_t::find_checkpoint()
             if (!recovery_start || i == found_recovery_start)
               return DB_SUCCESS;
             log_sys.next_checkpoint_no= UINT16_MAX;
+            if (const byte *checkpoint_buf= log_sys.checkpoint_buf)
+              memcpy(last_checkpoint_buf, checkpoint_buf, log_sys.write_size);
             goto next;
           }
           else
@@ -1940,6 +1948,9 @@ dberr_t recv_sys_t::find_checkpoint()
           ut_ad(!recovery_start || i == found_recovery_start);
           /* Restore the checkpoint number of the last log file. */
           log_sys.next_checkpoint_no= last_checkpoint_no;
+          ut_ad(log_sys.is_mmap() == !log_sys.checkpoint_buf);
+          if (byte *checkpoint_buf= log_sys.checkpoint_buf)
+            memcpy(checkpoint_buf, last_checkpoint_buf, log_sys.write_size);
           return DB_SUCCESS;
         }
 
@@ -1966,7 +1977,7 @@ dberr_t recv_sys_t::find_checkpoint()
       os_file_close(file);
       return DB_ERROR;
     }
-    else if (!log_sys.attach(file, size, read_only))
+    else if (!log_sys.attach(file, size, log_t::log_access(read_only)))
       goto err_exit;
     else
       file= OS_FILE_CLOSED;
@@ -3663,8 +3674,13 @@ bool log_t::archived_switch_recovery_prepare(lsn_t lsn) noexcept
   bool success;
   std::string path_name{get_archive_path(lsn)};
   const char *const fn= path_name.c_str();
+#ifdef HAVE_PMEM
+  static_assert(int{PMEM} == -1, "");
+#endif
+  static_assert(int{READ_WRITE} == 0, "");
+  static_assert(int{READ_ONLY} == 1, "");
   resize_log.m_file= os_file_create_func(fn, OS_FILE_OPEN, OS_LOG_FILE,
-                                         i->second.read_only, &success);
+                                         int{i->second.access} > 0, &success);
   ut_ad(success == (resize_log.m_file != OS_FILE_CLOSED));
   if (resize_log.m_file == OS_FILE_CLOSED)
   {
@@ -3724,15 +3740,6 @@ bool log_t::archived_switch_recovery() noexcept
 
   if (is_mmap())
     std::swap(buf, resize_buf);
-#if 1 /* FIXME: Move this code elsewhere. */
-  /* TODO: If innodb_log_file_mmap=ON, read all files via that, and
-  switch to pread() based after recovery is completed. */
-
-  /* Re-read the checkpoint header when switching files; FIXME: read
-  from (next_checkpoint_no * 4) & (write_size - 1) of the last file only. */
-  else if (resize_log.read(0, {checkpoint_buf, write_size}) != DB_SUCCESS)
-    return false;
-#endif
 
   std::swap(log, resize_log);
 
@@ -4855,6 +4862,7 @@ ATTRIBUTE_COLD void log_t::unstash_archive_file() noexcept
 {
   ut_ad(latch_have_wr());
   ut_ad(archive);
+  ut_ad(is_mmap() == !checkpoint_buf);
 
   if (resize_log.is_opened())
   {

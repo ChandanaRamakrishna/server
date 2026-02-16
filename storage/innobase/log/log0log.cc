@@ -195,26 +195,23 @@ void log_file_t::write(os_offset_t offset, span<const byte> buf) noexcept
 /** Attempt to memory map a file.
 @param file        log file handle
 @param size        file size
-@param read_only   whether the file is read-only
+@param access      how to access the file
 @return pointer to memory mapping
 @retval MAP_FAILED  if the memory cannot be mapped */
 static void *log_mmap(os_file_t file,
 # ifdef HAVE_PMEM
                       bool &is_pmem, /*!< whether the file is on pmem */
 # endif
-                      os_offset_t size,
-                      bool read_only)
+                      os_offset_t size, log_t::log_access access) noexcept
 {
 #if SIZEOF_SIZE_T < 8
   if (size != os_offset_t(size_t(size)))
     return MAP_FAILED;
 #endif
-  if (my_system_page_size > 4096)
-    return MAP_FAILED;
-# ifndef HAVE_PMEM
+#ifndef HAVE_PMEM
   if (!log_sys.log_mmap)
     /* If support for persistent memory (Linux: mount -o dax) is enabled,
-    we always attempt to open a MAP_SYNC memory mapping to ib_logfile0.
+    we always attempt to open a MAP_SYNC memory mapping to the log.
     This mapping will be read-only during crash recovery, and read-write
     during normal operation.
 
@@ -222,7 +219,7 @@ static void *log_mmap(os_file_t file,
     innodb_log_file_mmap=ON. This may benefit mariadb-backup
     and crash recovery. */
     return MAP_FAILED;
-# endif
+#endif
 
   /* For now, InnoDB does not support memory-mapped writes to
   a regular log file.
@@ -232,43 +229,44 @@ static void *log_mmap(os_file_t file,
 
   The mapping will always be read-only if innodb_read_only=ON or
   if mariadb-backup is running in any other mode than --prepare --export. */
-  ut_ad(read_only ||
+  ut_ad(access == log_t::READ_ONLY ||
         (!srv_read_only_mode && srv_operation < SRV_OPERATION_BACKUP));
 
-# ifdef _WIN32
-  void *ptr= MAP_FAILED;
-  if (!read_only);
+#ifdef _WIN32
+  if (access < log_t::READ_ONLY);
   else if (HANDLE h=
            CreateFileMappingA(file, nullptr, PAGE_READONLY,
                               DWORD(size >> 32), DWORD(size), nullptr))
   {
     if (h != INVALID_HANDLE_VALUE)
     {
-      ptr= MapViewOfFileEx(h, FILE_MAP_READ, 0, 0, size, nullptr);
+      void *ptr= MapViewOfFileEx(h, FILE_MAP_READ, 0, 0, size, nullptr);
       CloseHandle(h);
-      if (!ptr)
-        ptr= MAP_FAILED;
+      if (ptr)
+        return ptr;
     }
   }
-# else
+  return MAP_FAILED;
+#else
   int flags=
-#  ifdef HAVE_PMEM
+# ifdef HAVE_PMEM
     MAP_SHARED_VALIDATE | MAP_SYNC,
-#  else
+# else
     MAP_SHARED,
-#  endif
+# endif
     prot= PROT_READ;
 
-  if (!read_only)
-#  ifdef HAVE_PMEM
+# ifdef HAVE_PMEM
+  if (access < log_t::READ_ONLY)
     prot= PROT_READ | PROT_WRITE;
 
-#   ifdef __linux__ /* On Linux, we pretend that /dev/shm is PMEM */
+#  ifdef __linux__ /* On Linux, we pretend that /dev/shm is PMEM */
 remap:
-#   endif
-#  else
-    return MAP_FAILED;
 #  endif
+# else
+  if (access < log_t::READ_ONLY)
+    return MAP_FAILED;
+# endif
 
   void *ptr= my_mmap(0, size_t(size), prot, flags, file, 0);
 
@@ -297,11 +295,11 @@ remap:
     }
   }
 #   endif /* __linux__ */
-  if (read_only && log_sys.log_mmap)
+  if (access == log_t::READ_ONLY && log_sys.log_mmap)
     ptr= my_mmap(0, size_t(size), PROT_READ, MAP_SHARED, file, 0);
 #  endif /* HAVE_PMEM */
-# endif
   return ptr;
+# endif
 }
 
 #if defined __linux__ || defined _WIN32
@@ -323,9 +321,11 @@ ATTRIBUTE_COLD static void log_file_message() noexcept
 static inline void log_file_message() noexcept {}
 #endif
 
-bool log_t::attach(log_file_t file, os_offset_t size, bool read_only) noexcept
+bool log_t::attach(log_file_t file, os_offset_t size,
+                   log_t::log_access access) noexcept
 {
-  ut_ad(!log.is_opened());
+  ut_ad(file.is_opened());
+  ut_ad(!log.is_opened() || (archive && log.m_file == file.m_file));
   ut_ad(archive || !resize_log.is_opened());
   ut_ad(archive || !buf);
   ut_ad(archive || !resize_buf);
@@ -339,10 +339,9 @@ bool log_t::attach(log_file_t file, os_offset_t size, bool read_only) noexcept
   if (size)
   {
 # ifdef HAVE_PMEM
-    bool is_pmem;
-    void *ptr= ::log_mmap(file.m_file, is_pmem, size, read_only);
+    void *ptr= ::log_mmap(file.m_file, is_pmem, size, access);
 # else
-    void *ptr= ::log_mmap(file.m_file, size, read_only);
+    void *ptr= ::log_mmap(file.m_file, size, access);
 # endif
     if (ptr != MAP_FAILED)
     {
@@ -405,6 +404,7 @@ bool log_t::attach(log_file_t file, os_offset_t size, bool read_only) noexcept
   checkpoint_buf= static_cast<byte*>(aligned_malloc(write_size, write_size));
   if (!checkpoint_buf)
   {
+  alloc_fail3:
     ut_free_dodump(flush_buf, buf_size);
     flush_buf= nullptr;
     goto alloc_fail2;
@@ -413,6 +413,18 @@ bool log_t::attach(log_file_t file, os_offset_t size, bool read_only) noexcept
   TRASH_ALLOC(buf, buf_size);
   TRASH_ALLOC(flush_buf, buf_size);
   memset_aligned<512>(checkpoint_buf, 0, write_size);
+  if (archive)
+  {
+    size_t offset= size_t(next_checkpoint_no * 4);
+    if (offset & (write_size - 1) &&
+        file.read(offset & ~(write_size - 1),
+                  {checkpoint_buf, write_size}) != DB_SUCCESS)
+    {
+      aligned_free(checkpoint_buf);
+      checkpoint_buf= nullptr;
+      goto alloc_fail3;
+    }
+  }
 
  func_exit:
   log_file_message();
@@ -914,11 +926,13 @@ log_t::resize_start_status log_t::resize_start(os_offset_t size, void *thd)
 #ifdef HAVE_PMEM
       else if (is_mmap())
       {
+        ut_ad(is_mmap_writeable());
         bool is_pmem{false};
-        ptr= ::log_mmap(resize_log.m_file, is_pmem, size, false);
+        ptr= ::log_mmap(resize_log.m_file, is_pmem, size, READ_WRITE);
 
         if (ptr == MAP_FAILED)
           goto alloc_fail;
+        ut_ad(is_pmem == this->is_pmem);
       }
 #endif
       else
@@ -1273,6 +1287,7 @@ void log_t::archived_mmap_switch_prepare(bool late, bool ex) noexcept
 {
   ut_ad(archive);
   ut_ad(is_mmap());
+  ut_ad(is_mmap_writeable());
   ut_ad(log.is_opened());
   ut_ad(!resize_log.is_opened());
   ut_ad(!resize_buf);
@@ -1341,10 +1356,13 @@ void log_t::archived_mmap_switch_prepare(bool late, bool ex) noexcept
       {
         if (os_file_set_size(path.c_str(), file, resize_target))
         {
-          bool is_pmem{false};
-          resize_buf= static_cast<byte*>(::log_mmap(file, is_pmem,
-                                                    resize_target, false));
-          if (resize_buf != MAP_FAILED)
+          resize_buf=
+            static_cast<byte*>(::log_mmap(file, is_pmem,
+                                          resize_target, READ_WRITE));
+          if (resize_buf == MAP_FAILED);
+          else if (!is_pmem)
+            my_munmap(resize_buf, resize_target);
+          else
           {
             /* Will be closed in write_checkpoint() */
             resize_log= log;
@@ -1647,7 +1665,6 @@ void log_write_up_to(lsn_t lsn, bool durable,
     return;
   }
 #endif
-  ut_ad(!log_sys.is_mmap());
 
 repeat:
   if (durable)
@@ -1668,6 +1685,7 @@ repeat:
   {
     ut_ad(!recv_no_log_write || srv_operation != SRV_OPERATION_NORMAL);
     log_sys.latch.wr_lock(SRW_LOCK_CALL);
+    ut_ad(!log_sys.is_mmap());
     if (log_sys.archive)
     {
       /* Prepare to check if log_t::archive_new_write() will be invoked. */
@@ -1754,31 +1772,40 @@ ATTRIBUTE_COLD void log_write_and_flush_prepare() noexcept
 
 void log_t::clear_mmap() noexcept
 {
-  if (!is_mmap() || high_level_read_only)
+  ut_ad(!srv_read_only_mode || recv_sys.rpo);
+
+  if (!is_mmap() || recv_sys.rpo)
     return;
 
   log_resize_acquire();
   ut_ad(!resize_in_progress());
   ut_ad(get_lsn() == get_flushed_lsn(std::memory_order_relaxed));
 #ifdef HAVE_PMEM
-  if (is_opened() && !archive)
+  if (is_opened() && !is_mmap_writeable())
 #endif
   {
     ut_ad(write_lsn == get_lsn());
 
     if (buf) /* this may be invoked while creating a new database */
     {
-      alignas(16) byte log_block[4096];
+      alignas(16) byte log_block[log_t::WRITE_SIZE_MAX];
       const size_t bs{write_size};
       {
-        const size_t bf=
-          size_t(write_lsn - base_lsn.load(std::memory_order_relaxed));
-        memcpy_aligned<16>(log_block, buf + (bf & ~(bs - 1)), bs);
+        ut_ad(write_lsn >= first_lsn);
+        size_t bf= size_t(write_lsn - first_lsn);
+        if (!archive)
+          bf%= capacity();
+        bf+= START_OFFSET;
+        const size_t bs_1{bs - 1};
+        write_lsn_offset= bf & bs_1;
+        base_lsn.store(write_lsn - write_lsn_offset,
+                       std::memory_order_relaxed);
+        memcpy_aligned<16>(log_block, buf + (bf & ~bs_1), bs);
       }
 
       close_file(false);
       log_mmap= false;
-      ut_a(attach(log, file_size, false));
+      ut_a(attach(log, file_size, READ_WRITE));
       ut_ad(!is_mmap());
 
       memcpy_aligned<16>(buf, log_block, bs);

@@ -931,6 +931,7 @@ log_t::append_prepare<log_t::ARCHIVED_MMAP>(size_t size, bool ex) noexcept
 {
   ut_ad(ex ? latch_have_wr() : latch_have_rd());
   ut_ad(is_mmap());
+  ut_ad(is_mmap_writeable());
   ut_ad(archive);
   ut_ad(archived_lsn);
 
@@ -1002,6 +1003,7 @@ ATTRIBUTE_COLD void log_t::append_prepare_wait(bool late, bool ex) noexcept
     const bool is_pmem{is_mmap()};
     if (is_pmem)
     {
+      ut_ad(is_mmap_writeable());
       ut_ad(!archive);
       ut_ad(lsn - get_flushed_lsn(std::memory_order_relaxed) < capacity() ||
             overwrite_warned);

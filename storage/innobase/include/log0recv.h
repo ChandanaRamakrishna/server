@@ -252,7 +252,7 @@ public:
   /** the time when progress was last reported */
   time_t progress_time;
 
-  struct archive_log { const lsn_t end; bool read_only; };
+  struct archive_log { const lsn_t end; log_t::log_access access; };
   using archive_map = std::map<const lsn_t, archive_log>;
   /** archive log files */
   archive_map log_archive;

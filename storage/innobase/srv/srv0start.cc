@@ -221,7 +221,7 @@ close_and_exit:
 	}
 
 	log_sys.set_latest_format(srv_encrypt_log);
-	if (!log_sys.attach(file, srv_log_file_size, false)) {
+	if (!log_sys.attach(file, srv_log_file_size, log_t::READ_WRITE)) {
 		goto close_and_exit;
 	}
 

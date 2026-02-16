@@ -209,6 +209,8 @@ public:
 
   /** current innodb_log_write_ahead_size */
   uint write_size;
+  /** maximum write_size */
+  static constexpr uint WRITE_SIZE_MAX{4096};
   /** format of the redo log: e.g., FORMAT_10_8 */
   uint32_t format;
   /** the minimum log file size */
@@ -219,6 +221,12 @@ public:
   my_bool archive;
   /** whether the memory-mapped interface is enabled for the log */
   my_bool log_mmap;
+#ifdef HAVE_PMEM
+private:
+  /** whether the memory-mapped interface is enabled for writing */
+  bool is_pmem;
+public:
+#endif
   /** the default value of log_mmap */
   static constexpr bool log_mmap_default=
 # if defined __linux__ /* MAP_POPULATE would enable read-ahead */
@@ -410,9 +418,21 @@ public:
   /** Initialise the redo log subsystem. */
   void create() noexcept;
 
+  /** Access mode of a log file */
+  enum log_access {
+#ifdef HAVE_PMEM
+    /** read/write memory-mapping */
+    PMEM= -1,
+#endif
+    /** write via pwrite(); memory-mapped reads if log_sys.log_mmap */
+    READ_WRITE= 0,
+    /** read via pread() or memory-mapping according to log_sys.log_mmap */
+    READ_ONLY
+  };
+
   /** Attach a log file.
   @return whether the memory allocation succeeded */
-  bool attach(log_file_t file, os_offset_t size, bool read_only) noexcept;
+  bool attach(log_file_t file, os_offset_t size, log_access access) noexcept;
 
   /** Disable memory-mapped access (update log_mmap) */
   void clear_mmap() noexcept;
@@ -482,6 +502,8 @@ public:
   ATTRIBUTE_COLD void set_recovered_lsn(lsn_t lsn) noexcept;
 
 #ifdef HAVE_PMEM
+  /** @return whether the log is memory-mapped read-write */
+  bool is_mmap_writeable() const noexcept { return is_pmem; }
   /** Persist the log.
   @param lsn            desired new value of flushed_to_disk_lsn */
   void persist(lsn_t lsn) noexcept;
