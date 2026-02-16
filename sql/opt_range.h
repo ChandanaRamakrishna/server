@@ -2029,7 +2029,8 @@ SQL_SELECT *make_select(TABLE *head, table_map const_tables,
                         SORT_INFO* filesort,
                         bool allow_null_cond,  int *error);
 
-bool calculate_cond_selectivity_for_table(THD *thd, TABLE *table, Item **cond);
+bool calculate_cond_selectivity_for_table(THD *thd, TABLE *table,
+                                          Item **cond, JOIN *join);
 
 bool eq_ranges_exceeds_limit(RANGE_SEQ_IF *seq, void *seq_init_param,
                              uint limit);
@@ -2047,5 +2048,10 @@ extern String null_string;
 #define SELECTIVITY_SAMPLING_SHARE 0.10
 /* do not check if we are going check less then this number of records */
 #define SELECTIVITY_SAMPLING_THRESHOLD 10
+
+/*
+  Carefully chosen to execute TPC-H query 18 nicely
+*/
+#define DEFAULT_HAVING_SELECTIVITY 0.1
 
 #endif

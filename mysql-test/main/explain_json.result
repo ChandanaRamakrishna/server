@@ -1543,7 +1543,7 @@ EXPLAIN
               "loops": 1,
               "rows": 256,
               "cost": "COST_REPLACED",
-              "filtered": 100
+              "filtered": 9.765625
             }
           }
         ]

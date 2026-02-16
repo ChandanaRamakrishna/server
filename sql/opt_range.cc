@@ -3484,7 +3484,8 @@ static int cmp_quick_ranges(const void *a_, const void *b_)
     TRUE   otherwise 
 */
 
-bool calculate_cond_selectivity_for_table(THD *thd, TABLE *table, Item **cond)
+bool calculate_cond_selectivity_for_table(THD *thd, TABLE *table,
+                                          Item **cond, JOIN *join)
 {
   uint keynr, range_index, ranges;
   MY_BITMAP *used_fields= &table->cond_set;
@@ -3512,6 +3513,8 @@ bool calculate_cond_selectivity_for_table(THD *thd, TABLE *table, Item **cond)
 
   if (!*cond || table->pos_in_table_list->schema_table)
   {
+    if (join->having)
+      table->opt_range_condition_rows*= DEFAULT_HAVING_SELECTIVITY;
     table->set_cond_selectivity(table->opt_range_condition_rows /
                                 table_records);
     DBUG_RETURN(FALSE);

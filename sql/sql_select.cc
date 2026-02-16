@@ -6261,7 +6261,7 @@ make_join_statistics(JOIN *join, List<TABLE_LIST> &tables_list,
             sargable_cond= get_sargable_cond(join, s->table);
           if (join->thd->variables.optimizer_use_condition_selectivity > 1)
             calculate_cond_selectivity_for_table(join->thd, s->table,
-                                                 sargable_cond);
+                                                 sargable_cond, join);
           if (s->table->reginfo.impossible_range)
           {
             impossible_range= TRUE;
