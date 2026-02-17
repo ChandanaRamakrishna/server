@@ -1119,18 +1119,24 @@ ATTRIBUTE_COLD void log_t::archive_new_write(const byte *buf, size_t length,
   ut_ad(length);
   ut_a(offset + length + START_OFFSET <= file_size + resize_target);
   ut_ad(is_latest());
-  ut_ad(resize_log.is_opened() == (offset >= file_size));
 
-  if (offset >= file_size)
+  if (resize_log.is_opened())
   {
+    /* We had already created a new log file in a previous invocation
+    of this function. The old log file (now pointed by resize_log)
+    will be closed in write_checkpoint() once the first checkpoint in
+    this new log file has been written. */
+    ut_ad(offset >= file_size);
     log.write(offset - file_size + START_OFFSET, {buf, length});
     return;
   }
 
-  const size_t first{size_t(file_size - offset)};
-  log.write(offset, {buf, first});
-  length-= first;
-  buf+= first;
+  if (const size_t first{size_t(file_size - offset)})
+  {
+    log.write(offset, {buf, first});
+    length-= first;
+    buf+= first;
+  }
 
   std::string path{get_next_archive_path()};
   bool success;
