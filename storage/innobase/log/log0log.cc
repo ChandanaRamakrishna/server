@@ -417,7 +417,7 @@ bool log_t::attach(log_file_t file, os_offset_t size,
   {
     size_t offset= size_t(next_checkpoint_no * 4);
     if (offset & (write_size - 1) &&
-        file.read(offset & ~(write_size - 1),
+        file.read(offset & ~(size_t{write_size} - 1),
                   {checkpoint_buf, write_size}) != DB_SUCCESS)
     {
       aligned_free(checkpoint_buf);
@@ -1806,7 +1806,7 @@ void log_t::clear_mmap() noexcept
         write_lsn_offset= bf & bs_1;
         base_lsn.store(write_lsn - write_lsn_offset,
                        std::memory_order_relaxed);
-        memcpy_aligned<16>(log_block, buf + (bf & ~bs_1), bs);
+        memcpy_aligned<16>(log_block, buf + (bf & ~uint64_t{bs_1}), bs);
       }
 
       close_file(false);
