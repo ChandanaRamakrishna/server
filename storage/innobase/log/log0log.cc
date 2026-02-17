@@ -1799,7 +1799,7 @@ void log_t::clear_mmap() noexcept
       {
         ut_ad(write_lsn >= first_lsn);
         uint64_t bf{write_lsn - first_lsn};
-        if (!archive)
+        if (!archive && bf > capacity())
           bf%= capacity();
         bf+= START_OFFSET;
         const size_t bs_1{bs - 1};
