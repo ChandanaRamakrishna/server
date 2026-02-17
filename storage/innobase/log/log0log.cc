@@ -1798,7 +1798,7 @@ void log_t::clear_mmap() noexcept
       const size_t bs{write_size};
       {
         ut_ad(write_lsn >= first_lsn);
-        size_t bf= size_t(write_lsn - first_lsn);
+        uint64_t bf{write_lsn - first_lsn};
         if (!archive)
           bf%= capacity();
         bf+= START_OFFSET;
